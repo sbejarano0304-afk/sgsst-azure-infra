@@ -1,0 +1,12 @@
+.git
+.github
+.next
+node_modules
+venv
+tests
+scripts
+src
+public
+*.env
+.env*
+.DS_Store

@@ -1,0 +1,105 @@
+data "azuread_client_config" "current" {}
+
+data "azuread_domains" "initial" {
+  only_initial = true
+}
+
+resource "azuread_group" "admins" {
+  display_name     = "sg-${var.project}-admins"
+  security_enabled = true
+  owners           = [data.azuread_client_config.current.object_id]
+}
+
+resource "azuread_group" "readers" {
+  display_name     = "sg-${var.project}-readers"
+  security_enabled = true
+  owners           = [data.azuread_client_config.current.object_id]
+}
+
+# Readers get standing read access. Admins get NOTHING standing (see 2.6).
+resource "azurerm_role_assignment" "readers" {
+  scope                = azurerm_resource_group.main.id
+  role_definition_name = "Reader"
+  principal_id         = azuread_group.readers.object_id
+}
+
+resource "random_password" "ana" {
+  length  = 20
+  special = true
+}
+
+resource "azuread_user" "ana" {
+  user_principal_name   = "ana.lab@${data.azuread_domains.initial.domains[0].domain_name}"
+  display_name          = "Ana Lab"
+  password              = random_password.ana.result
+  force_password_change = true
+  usage_location        = "CO" # Azure needs a country before it assigns a license
+}
+
+resource "azuread_group_member" "ana_admins" {
+  group_object_id  = azuread_group.admins.object_id
+  member_object_id = azuread_user.ana.object_id
+}
+
+resource "azurerm_user_assigned_identity" "app" {
+  name                = "id-${var.project}-app"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = local.tags
+}
+
+output "ana_upn" {
+  value = azuread_user.ana.user_principal_name
+}
+
+output "ana_initial_password" {
+  value     = random_password.ana.result
+  sensitive = true
+}
+
+resource "azuread_application" "github" {
+  display_name = "gh-${var.project}-deploy"
+  owners       = [data.azuread_client_config.current.object_id]
+}
+
+resource "azuread_service_principal" "github" {
+  client_id = azuread_application.github.client_id
+  owners    = [data.azuread_client_config.current.object_id]
+}
+
+# GitHub can trade its own OIDC token for an Azure token,
+# but ONLY for workflows running on the main branch of this repo.
+resource "azuread_application_federated_identity_credential" "main" {
+  application_id = azuread_application.github.id
+  display_name   = "github-main"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = "repo:${var.github_repo}:ref:refs/heads/main"
+}
+
+output "github_client_id" {
+  value = azuread_application.github.client_id
+}
+
+output "tenant_id" {
+  value = data.azuread_client_config.current.tenant_id
+}
+
+data "azurerm_role_definition" "contributor" {
+  name  = "Contributor"
+  scope = azurerm_resource_group.main.id
+}
+
+
+resource "azurerm_pim_eligible_role_assignment" "admins_contributor" {
+  scope              = azurerm_resource_group.main.id
+  role_definition_id = data.azurerm_role_definition.contributor.id
+  principal_id       = azuread_group.admins.object_id
+  justification      = "Admins activate Contributor just in time"
+
+  schedule {
+    expiration {
+      duration_days = 30
+    }
+  }
+}

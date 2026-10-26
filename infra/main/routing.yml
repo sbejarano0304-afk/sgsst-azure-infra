@@ -1,0 +1,19 @@
+rules:
+  - description: API paths go to the api app
+    routes:
+      - match:
+          pathSeparatedPrefix: /api
+      - match:
+          prefix: /informe
+      - match:
+          path: /openapi.json
+      - match:
+          prefix: /docs
+    targets:
+      - containerApp: ca-sgsst-api
+  - description: Everything else goes to the web app
+    routes:
+      - match:
+          prefix: /
+    targets:
+      - containerApp: ca-sgsst-web

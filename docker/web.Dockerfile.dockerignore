@@ -1,0 +1,10 @@
+.git
+.github
+.next
+node_modules
+venv
+tests
+api
+*.env
+.env*
+.DS_Store
