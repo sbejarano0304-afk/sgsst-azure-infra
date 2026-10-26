@@ -1,0 +1,64 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # lets the job ask GitHub for its OIDC token
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, web]
+    steps:
+      - name: Check out this repo (Dockerfiles)
+        uses: actions/checkout@v4
+
+      - name: Check out the app code
+        uses: actions/checkout@v4
+        with:
+          repository: sbejarano0304-afk/auditoria-sst
+          token: ${{ secrets.APP_REPO_TOKEN }}
+          path: app
+
+      - name: Log in to Azure (OIDC, no secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build
+        run: |
+          IMAGE="${{ vars.ACR_NAME }}.azurecr.io/sgsst-${{ matrix.service }}:${{ github.sha }}"
+          docker build -f docker/${{ matrix.service }}.Dockerfile \
+            --build-arg CLIENT_NAME="${{ secrets.CLIENT_NAME }}" \
+            -t "$IMAGE" app
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Scan the image before it ships
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 "$IMAGE"
+
+      - name: Push
+        run: |
+          az acr login --name ${{ vars.ACR_NAME }}
+          docker push "$IMAGE"
+
+      - name: Deploy and show the new revision
+        run: |
+          az containerapp update -n ca-sgsst-${{ matrix.service }} -g rg-sgsst \
+            --image "$IMAGE" -o none
+          az containerapp revision list -n ca-sgsst-${{ matrix.service }} -g rg-sgsst \
+            --query "[0].{revision:name, health:properties.healthState}" -o table
